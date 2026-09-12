@@ -1,0 +1,6 @@
+interface:
+  display_name: "CAD -> WCS 布局映射"
+  short_description: "把 CAD 设备布局图转成 WCS 设备表结构与可编辑监控页"
+  default_prompt: "Use $cad-wcs-layout to convert a DXF layout into the WCS device table schema and an editable monitor page."
+policy:
+  allow_implicit_invocation: true
