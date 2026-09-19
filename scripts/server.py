@@ -1,6 +1,7 @@
 import json
 import os
 import importlib
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -10,6 +11,8 @@ from wcs_schema import WCS_FIELDS
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(ROOT, "wcs_layout.csv")
+COLOR_CONFIG_PATH = os.path.join(ROOT, "station_colors.json")
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 import build_html
 
 
@@ -47,12 +50,62 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, f.read(), ctype)
 
     def do_POST(self):
-        if self.path.split("?", 1)[0] != "/save-layout":
+        path = self.path.split("?", 1)[0]
+        if path not in ("/save-layout", "/save-station-colors"):
             self._send(404, b"unknown endpoint")
             return
         try:
             n = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(n).decode("utf-8"))
+            if path == "/save-station-colors":
+                if payload.get("format") not in ("station_colors_v1", "station_colors_v2"):
+                    raise ValueError("不支持的颜色配置格式")
+                colors = payload.get("colors")
+                if not isinstance(colors, dict) or not colors:
+                    raise ValueError("colors 必须是非空对象")
+                cleaned = {}
+                for key, value in colors.items():
+                    key = str(key)
+                    if len(key) > 64 or not isinstance(value, dict):
+                        raise ValueError("stationtype 颜色配置无效")
+                    item = {}
+                    for field in ("fill", "border", "text"):
+                        color = str(value.get(field, ""))
+                        if not HEX_COLOR_RE.fullmatch(color):
+                            raise ValueError(f"{key or '空值'} 的 {field} 不是有效的十六进制颜色")
+                        item[field] = color.lower()
+                    cleaned[key] = item
+                if "__default__" not in cleaned:
+                    raise ValueError("颜色配置缺少 __default__ 默认项")
+                cleaned_rules = []
+                rules = payload.get("remark_rules", [])
+                if not isinstance(rules, list) or len(rules) > 500:
+                    raise ValueError("remark_rules 必须是最多 500 条的数组")
+                for rule in rules:
+                    if not isinstance(rule, dict):
+                        raise ValueError("备注颜色规则无效")
+                    keyword = str(rule.get("contains", "")).strip()
+                    if not keyword or len(keyword) > 256:
+                        raise ValueError("备注包含关键词不能为空且不能超过 256 个字符")
+                    item = {"contains": keyword}
+                    for field in ("fill", "border", "text"):
+                        color = str(rule.get(field, ""))
+                        if not HEX_COLOR_RE.fullmatch(color):
+                            raise ValueError(f"备注规则 {keyword} 的 {field} 不是有效的十六进制颜色")
+                        item[field] = color.lower()
+                    cleaned_rules.append(item)
+                config = {"format": "station_colors_v2", "colors": cleaned,
+                          "remark_rules": cleaned_rules}
+                tmp = COLOR_CONFIG_PATH + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+                    f.write("\n")
+                os.replace(tmp, COLOR_CONFIG_PATH)
+                body = json.dumps({"ok": True, "count": len(cleaned),
+                                   "rule_count": len(cleaned_rules)}, ensure_ascii=False).encode("utf-8")
+                self._send(200, body, "application/json; charset=utf-8")
+                return
+
             if payload.get("format") != "wcs_layout_v1":
                 raise ValueError("不支持的保存格式")
             rows = payload.get("rows")
@@ -76,7 +129,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps({"ok": True, "count": len(rows)}, ensure_ascii=False).encode("utf-8")
             self._send(200, body, "application/json; charset=utf-8")
         except PermissionError:
-            self._send(409, json.dumps({"ok": False, "error": "CSV 被占用，请先关闭 Excel/WPS 后重试"},
+            msg = ("颜色配置文件被占用，请关闭相关程序后重试" if path == "/save-station-colors"
+                   else "CSV 被占用，请先关闭 Excel/WPS 后重试")
+            self._send(409, json.dumps({"ok": False, "error": msg},
                                        ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
         except Exception as e:

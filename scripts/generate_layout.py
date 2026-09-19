@@ -27,7 +27,7 @@ CREATETIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # direction 枚举: 1=右, 2=上(画布 y 减小), 3=左, 4=下(画布 y 增大)
 ANGLE_TO_DIRECTION = {0: 1, 90: 2, 180: 3, 270: 4, 360: 1}
-# arrowdirection 箭头类型: 0=空 1=右 2=左 3=下 4=上 5=左右双向 6=上下双向
+# arrowdirection 多选方向:空字符串/0=无箭头,1=右,2=左,3=下,4=上;多选用逗号分隔
 # CAD 箭头角度 -> 箭头类型(CAD 90 度朝上,对应画布 y 减小)
 ANGLE_TO_ARROW = {0: 1, 90: 4, 180: 2, 270: 3, 360: 1}
 # 编号序列推断出的流向(direction 枚举 1右 2上 3左 4下)-> 箭头类型
@@ -167,7 +167,7 @@ print(f"设备: {len(out_rows)} | 画布: {gx_span}x{gy_span} 格 | 同格设备
 n_with_arrow = sum(1 for r in out_rows if int(r["arrowdirection"] or 0) > 0)
 print(f"arrowdirection 来源: CAD 箭头 {n_arrow} | 流向推断 {n_seq} | 空 {n_none}")
 dist = Counter(int(r["arrowdirection"] or 0) for r in out_rows)
-ARROW_NAMES = {0: "空", 1: "右", 2: "左", 3: "下", 4: "上", 5: "左右双向", 6: "上下双向"}
+ARROW_NAMES = {0: "空", 1: "右", 2: "左", 3: "下", 4: "上"}
 detail = " | ".join(f"{ARROW_NAMES[k]}={dist[k]}" for k in sorted(dist))
 print(f"arrowdirection 类型: 有箭头 {n_with_arrow} 台 / 空 {len(out_rows) - n_with_arrow} 台 ({detail})")
 print("width/height 输出 1;链路填充由 wcs_monitor.html 计算后写回")

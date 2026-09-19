@@ -1,102 +1,48 @@
 ---
 name: cad-wcs-layout
-description: Convert a CAD layout drawing (DXF) into a WCS device table (expdata schema) plus an editable HTML grid monitor/canvas page, or edit an existing WCS-shaped layout CSV with a full-field CRUD table, single/batch property panels, chain-fill spans, and flow-arrow tools. Use for CAD-to-WCS layout mapping; not for general CAD viewing or 3D work.
+description: Convert a CAD layout drawing (DXF) into a WCS expdata-shaped CSV and an editable HTML grid monitor, or maintain an existing WCS layout editor with CRUD, search, undo, overlap handling, manual chain fill, multi-direction arrows, text direction, and configurable station colors. Use for CAD-to-WCS layout mapping and this editor pattern; not for general CAD viewing or 3D work.
 ---
 
-# CAD -> WCS 布局映射
+# CAD → WCS 布局映射
 
-把 CAD 布局图里的设备标签解析成 WCS 设备表结构（`expdata` 34 列）的 CSV，
-并生成带编辑态的 HTML 监控页；编辑结果经本地服务整体写回 CSV。
-`scripts/` 下是经过验证的脚本，复制到目标项目后按需改常量即可，不要凭记忆重写解析逻辑。
+将 CAD 设备标签转换成 WCS `expdata` 34 列 CSV，并生成可通过本地服务编辑和保存的 HTML 画布。优先复用 `scripts/` 中已验证的实现；适配项目时修改集中常量和字段定义，不要重新发明解析或编辑逻辑。
 
-## 输出数据结构（核心约定）
+## 核心数据约定
 
-CSV 列名与顺序严格等于 WCS 设备表 `expdata`：
+字段顺序由 `scripts/wcs_schema.py` 的 `WCS_FIELDS` 唯一定义；中文标签和单选、批量、只读范围也在该文件维护。缺少真实来源的字段留空，不添加 `renderwidth`、`renderheight`、`x_mm`、`y_mm` 等旁路列。
 
-```
-itemid,itemname,groupname,objects,datetype,signaltype,value,stationno,remark,
-userid,createtime,field1,field2,field3,field4,field5,warehouseid,status,stationtype,
-locationx,locationy,width,height,belong,direction,zonecode,areacode,arrowdirection,
-zone,workingLocation1,workingLocation2,workingNumber,protocolType,equipmentType
-```
+- `locationx/locationy` 是格子坐标，Y 轴向下。
+- `width/height` 是渲染跨度。
+- `status=1` 的设备才显示。
+- `field5` 越大层级越高，同坐标折叠时也用它选默认代表。
+- `direction` 控制文字：空、1、3 为水平，2、4 为垂直；空值必须保留为合法选项。
+- `arrowdirection` 为逗号分隔多选值：1 右、2 左、3 下、4 上。旧 5/6 仅兼容读取为 `1,2`/`3,4`，不再生成双向枚举。
 
-**所有字段定义集中在 `scripts/wcs_schema.py`**：`WCS_FIELDS`（列顺序）、`FIELD_LABELS`（中文名）、
-`SINGLE_EDIT_FIELDS` / `BATCH_EDIT_FIELDS` / `READONLY_FIELDS`（预览图编辑能力）。
-改字段只改这一处，页面表头、属性面板、批量面板都会跟着变。
+## 工作流
 
-CAD 能提供来源的字段：
+1. `extract_devices.py` 流式解析大型文本 DXF，输出 `devices_world.csv`。
+2. `generate_layout.py` 将毫米坐标换算为格子坐标，按 WCS 34 列输出 `wcs_layout.csv`。
+3. `build_html.py` 生成 `wcs_monitor.html`；`server.py` 也会按每次请求动态渲染。
+4. 用 `python server.py` 启动 `127.0.0.1:8734`。不要用 `file://` 或普通静态服务器测试保存。
 
-- `itemid` = 图纸编号；`itemname` / `stationno` 默认同 itemid
-- `groupname` / `equipmentType` = `Convery`；`zonecode` = `输送机监控`（常量，按项目改）
-- `locationx` / `locationy` = CAD 毫米换算的格子坐标（1 格 = `MM_PER_CELL`，默认 1150mm，Y 轴朝下）
-- `arrowdirection` = 箭头类型：0 空 / 1 右 / 2 左 / 3 下 / 4 上 / 5 左右双向 / 6 上下双向。
-  来源有优先级：① CAD 箭头锚点角度（0°→1、90°→4、180°→2、270°→3，常量 `ANGLE_TO_ARROW`）
-  ② 编号序列推断出的流向（右→1、上→4、左→2、下→3，常量 `DIRECTION_TO_ARROW`）
-  两者都没有才是 0
-- `width` / `height` = 提取阶段一律 1，链路填充跨度由 HTML 计算后写回
-- `status` = 1（预览图只显示 status==1 的设备）、`belong` = 1、`stationtype` = 0、
-  `createtime` = 导出时的当前时间
+编辑已有 WCS CSV 时可跳过 DXF 两步。重新生成 CSV 属于覆盖当前编辑结果的操作，执行前确认用户意图。
 
-其余字段无数据来源时留空字符串，不要编造默认值。
+## 编辑器不变量
 
-**不要**再引入 `renderwidth`/`renderheight`/`x_mm`/`y_mm`/`direction_source` 之类旁路列；
-渲染跨度并入 `width`/`height`。
+- 链路填充只能由用户点击按钮触发，页面加载、编辑、拖动和保存不得自动重算。
+- 链路算法的邻居图包含所有设备，只对允许重算的设备写入结果，保持保存和重载幂等。
+- 箭头使用四个复选框多选；相反方向绘制成两条单向箭头；不提供旋转按钮。
+- 未保存修改进入最多 50 步撤回栈，保存成功后清空。
+- 属性面板悬浮时滚轮滚动面板，画布悬浮时滚轮缩放。
+- 同坐标设备以扇形展开，点击组外自动收回，折叠角标保持紧凑。
+- 页面 GET 时重载 `wcs_schema` 与 `build_html`，并禁用缓存；启动或重启前确保端口没有多个服务进程。
 
-## 流程
+颜色、重叠、缩放、搜索、保存接口和 UI 的详细约定见 [references/editor-behavior.md](references/editor-behavior.md)。修改编辑器时只读取该参考文件，不需要在单纯 DXF 提取任务中加载。
 
-1. `extract_devices.py`：流式解析 DXF（支持几百 MB 文本 DXF），按块层级还原世界坐标，
-   输出 `devices_world.csv`（kind,value,x,y）。适配新图纸时改顶部的图层名/类型过滤。
-2. `generate_layout.py`：毫米 -> 格子（Y 翻转），箭头类型换算，按 WCS 34 列输出 `wcs_layout.csv`。
-   可调参数集中在顶部（`MM_PER_CELL`、偏移、`GROUP_NAME`、`ZONE_CODE`、`STATUS`、`BELONG`、
-   `STATION_TYPE`、`ANGLE_TO_ARROW`、`DIRECTION_TO_ARROW`）。
-   方向推断是"CAD 箭头锚点优先、编号序列兜底"，推断结果只写进 `arrowdirection`。
-3. `build_html.py`：读 CSV 渲染 `wcs_monitor.html`（自包含；server.py 也会按请求动态渲染）。
-4. `server.py`：本地服务（默认 `127.0.0.1:8734`）+ `POST /save-layout` 整体回写 CSV。
+## 验证
 
-脚本都用「脚本所在目录」定位输入输出，可从任意工作目录运行；`wcs_schema.py` 必须和它们同目录。
-
-## 链路填充
-
-预览里的"设备连成一条线"由链路填充实现：相邻同排/同列设备、间隔 1~`CHAIN_MAX`（默认 4）格，
-横向优先。实现在页面 JS 的 `autoFill()`，加载时按坐标计算，编辑后自动重算，
-保存时结果写进 `width`/`height`。手工改过宽高的设备标记 `manual`，不再被自动填充覆盖；
-顶部`重算链路填充`按钮清空标记后重算。
-
-**不变量**：`autoFill()` 的邻居图必须包含全部设备（含手工值设备），只对非手工设备应用结果。
-早期版本把手工值设备排除出邻居图，导致保存→重载→再保存时反复多填（224 涨到 259）。
-改这段前先守住这个不变量，并验证幂等：载入 224 → 保存 → 重载 224。
-
-## 三个编辑入口
-
-**布局视图 · 单选面板**：单击设备后在右侧改 `SINGLE_EDIT_FIELDS` 里的字段。
-标签统一显示成 `itemname(设备名称)`（原始字段名 + 中文名）。
-`READONLY_FIELDS`（创建时间、仓库ID）在面板底部只读展示。
-
-**布局视图 · 批量面板**：框选或 Ctrl+多选后，对 `BATCH_EDIT_FIELDS` 逐字段批量设置
-（留空表示不改该字段），另有 `ΔX/ΔY` 相对批量移动。
-整格拖拽移动、Del 删除、Esc 清选、右键拖拽平移画布、Ctrl+S 保存。
-
-**设备数据视图**：全字段表格，单元格 `contenteditable` 直接改（改动标黄），
-支持任意字段搜索、新增设备、勾选批量删除、列头排序、保存到数据源；
-`itemid` 列横向滚动时固定。这一视图不受上面的编辑能力清单限制，是原始数据入口。
-
-## 渲染约定
-
-- 设备块只画 `status == 1` 的；标签默认 `itemname`，`remark` 非空时换行加一行小字
-- `field5` = 层级，块 `z-index = 1 + field5`（越大越置顶），选中设备临时置顶，箭头层始终最上
-- 悬停提示显示名称 / 备注 / 坐标 / 渲染大小，不显示设备状态
-- 预览图里任何改动都会把该设备的 `createtime`（在 Python 侧）刷新为修改时间
-
-## 验证与坑
-
-- 预览必须走 `python server.py` 的 localhost 服务，`file://` 会被浏览器安全策略拦截；
-  普通 `python -m http.server` 没有保存端点。
-- 保存报"CSV 被占用"时，让用户关闭 Excel/WPS 后重试；写回前校验 `itemid` 唯一。
-- `server.py` 每次请求会重载 `wcs_schema` 和 `build_html` —— 只重载 `build_html` 不够，
-  字段定义改了不会生效（踩过）。
-- 重启服务前确认端口没有残留进程（曾出现两个进程抢答、页面读到旧数据）。
-- 批量面板的控件不要用和单选面板相同的 `data-k` 绑定，否则下拉 change 会触发单选逻辑
-  并重渲染面板、把值重置回默认（踩过）。
-- 浏览器自动化验证：设备块很小时 `page.click('.blk', {hasText})` 可能误点相邻块，
-  改用元素中心坐标 `mouse.click`；框选命中判定必须统一用格子坐标（混用像素是历史 bug）。
-- 大图纸上 width/height 是"渲染跨度"而非物理尺寸；真实外形需要从轮廓几何提取，那是独立的后续工作。
+- 对变更过的 Python 文件执行 `py_compile`。
+- 生成一次 HTML，并对内嵌 JavaScript 执行 `node --check`。
+- 动态页面和保存接口必须从 `127.0.0.1:8734` 验证。
+- UI 验证不得写坏用户 CSV；优先只读检查，涉及保存时使用副本或等价配置回写。
+- 确认 CSV 行数和 34 列结构未意外变化。
