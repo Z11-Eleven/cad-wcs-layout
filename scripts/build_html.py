@@ -44,7 +44,7 @@ def _arrow_types(value):
             arrow = int(float(part))
         except ValueError:
             continue
-        values = (1, 2) if arrow == 5 else ((3, 4) if arrow == 6 else (arrow,))
+        values = (3, 4) if arrow == 5 else ((1, 2) if arrow == 6 else (arrow,))
         for item in values:
             if item in (1, 2, 3, 4) and item not in found:
                 found.append(item)
@@ -65,7 +65,7 @@ def devices_from_rows(rows):
             "y": _int(raw["locationy"]),
             "w": max(1, _int(raw["width"], 1)),
             "h": max(1, _int(raw["height"], 1)),
-            # arrowdirection 是逗号分隔的多选方向：1右 2左 3下 4上。
+            # arrowdirection 是逗号分隔的多选方向：1上 2下 3左 4右。
             "arrows": _arrow_types(raw["arrowdirection"]),
             "field5": _int(raw["field5"]),
             "raw": raw,
@@ -483,28 +483,32 @@ const CHAIN_MAX = 4;
 const DEFAULTS = { groupname: 'Convery', type: 'Convery', zone: '输送机监控' };
 // arrowdirection 箭头类型
 const ARROWS = [
-  { v: 0, label: '无' }, { v: 1, label: '右' }, { v: 2, label: '左' },
-  { v: 3, label: '下' }, { v: 4, label: '上' },
+  { v: 0, label: '无' }, { v: 1, label: '上' }, { v: 2, label: '下' },
+  { v: 3, label: '左' }, { v: 4, label: '右' },
 ];
 const STATION_TYPES = ['0', '1', '3', '5', '6', '7', '8', '10', '11', '16'];
 const TEXT_DIRECTIONS = [
   { v: '', label: '留空（默认水平）' },
-  { v: '1', label: '水平排列' },
-  { v: '2', label: '垂直排列' },
+  { v: '1', label: '上（垂直排列）' },
+  { v: '2', label: '下（垂直排列）' },
+  { v: '3', label: '左（水平排列）' },
+  { v: '4', label: '右（水平排列）' },
 ];
-// 兼容 generate_layout.py 产生的旧方向枚举：1/3 水平，2/4 垂直。
-const isVerticalText = value => ['2', '4', 'vertical', 'v'].includes(
+// direction 新枚举：1上/2下为垂直，3左/4右为水平；空值默认水平。
+const isVerticalText = value => ['1', '2', 'vertical', 'v'].includes(
   String(value == null ? '' : value).trim().toLowerCase());
 const textDirectionValue = value => {
   const raw = String(value == null ? '' : value).trim();
-  return raw === '' ? '' : (isVerticalText(raw) ? '2' : '1');
+  if (raw === '') return '';
+  if (['1', '2', '3', '4'].includes(raw)) return raw;
+  return isVerticalText(raw) ? '2' : '4';
 };
 function normalizeArrows(value) {
   const source = Array.isArray(value) ? value : String(value == null ? '' : value).split(/[,，;；\s]+/);
   const result = [];
   source.forEach(part => {
     const arrow = Number(part);
-    const values = arrow === 5 ? [1, 2] : (arrow === 6 ? [3, 4] : [arrow]);
+    const values = arrow === 5 ? [3, 4] : (arrow === 6 ? [1, 2] : [arrow]);
     values.forEach(item => { if ([1, 2, 3, 4].includes(item) && !result.includes(item)) result.push(item); });
   });
   return result.sort((a, b) => a - b);
@@ -1030,10 +1034,10 @@ function marker(id, color, reverse) {
 // 单个箭头类型 -> 方向；多方向由多条单向箭头组合显示。
 function arrowGeom(type) {
   switch (type) {
-    case 1: return { dir: 1 };                  // 右
-    case 2: return { dir: -1 };                 // 左
-    case 3: return { vert: true, dir: 1 };       // 下
-    case 4: return { vert: true, dir: -1 };      // 上
+    case 1: return { vert: true, dir: -1 };      // 上
+    case 2: return { vert: true, dir: 1 };       // 下
+    case 3: return { dir: -1 };                  // 左
+    case 4: return { dir: 1 };                   // 右
     default: return null;
   }
 }
@@ -1046,8 +1050,8 @@ function renderArrows() {
   displayEntries().entries.forEach(entry => {
     const d = entry.d;
     const arrows = normalizeArrows(d.arrows);
-    const horizontal = arrows.filter(v => v === 1 || v === 2);
-    const vertical = arrows.filter(v => v === 3 || v === 4);
+    const horizontal = arrows.filter(v => v === 3 || v === 4);
+    const vertical = arrows.filter(v => v === 1 || v === 2);
     arrows.forEach(type => {
       const geo = arrowGeom(type);
       if (!geo) return;

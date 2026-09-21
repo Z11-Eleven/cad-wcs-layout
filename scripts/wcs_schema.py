@@ -33,7 +33,7 @@ FIELD_LABELS = {
     "warehouseid": "仓库ID", "status": "启用状态", "stationtype": "站台类型",
     "locationx": "X坐标", "locationy": "Y坐标",
     "width": "图标宽", "height": "图标长", "belong": "线程编号",
-    "direction": "文字排列方向", "zonecode": "画布区域编号",
+    "direction": "方向(文字排列)", "zonecode": "画布区域编号",
     "areacode": "拉线区域编号", "arrowdirection": "箭头方向", "zone": "库区编号",
     "workingLocation1": "双叉叉1站台号", "workingLocation2": "双叉叉2站台号",
     "workingNumber": "双叉货叉编号", "protocolType": "协议类型",

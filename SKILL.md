@@ -15,8 +15,8 @@ description: Convert a CAD layout drawing (DXF) into a WCS expdata-shaped CSV an
 - `width/height` 是渲染跨度。
 - `status=1` 的设备才显示。
 - `field5` 越大层级越高，同坐标折叠时也用它选默认代表。
-- `direction` 控制文字：空、1、3 为水平，2、4 为垂直；空值必须保留为合法选项。
-- `arrowdirection` 为逗号分隔多选值：1 右、2 左、3 下、4 上。旧 5/6 仅兼容读取为 `1,2`/`3,4`，不再生成双向枚举。
+- `direction` 与箭头统一为 1 上、2 下、3 左、4 右，并控制文字轴向：1/2 垂直，3/4 水平；空值默认水平且必须保留为合法选项。
+- `arrowdirection` 为逗号分隔多选值：1 上、2 下、3 左、4 右。旧 5/6 仅兼容读取为 `3,4`/`1,2`，不再生成双向枚举。
 
 ## 工作流
 

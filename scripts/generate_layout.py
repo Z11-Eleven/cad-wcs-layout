@@ -25,13 +25,13 @@ BELONG = "1"
 STATION_TYPE = "0"         # 设备类型/功能,目前已知取值 1,3,5,6,7,8,10,11,16
 CREATETIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# direction 枚举: 1=右, 2=上(画布 y 减小), 3=左, 4=下(画布 y 增大)
-ANGLE_TO_DIRECTION = {0: 1, 90: 2, 180: 3, 270: 4, 360: 1}
-# arrowdirection 多选方向:空字符串/0=无箭头,1=右,2=左,3=下,4=上;多选用逗号分隔
+# direction/arrowdirection 统一枚举:1=上,2=下,3=左,4=右
+ANGLE_TO_DIRECTION = {0: 4, 90: 1, 180: 3, 270: 2, 360: 4}
+# arrowdirection 多选方向:空字符串/0=无箭头,1=上,2=下,3=左,4=右;多选用逗号分隔
 # CAD 箭头角度 -> 箭头类型(CAD 90 度朝上,对应画布 y 减小)
-ANGLE_TO_ARROW = {0: 1, 90: 4, 180: 2, 270: 3, 360: 1}
-# 编号序列推断出的流向(direction 枚举 1右 2上 3左 4下)-> 箭头类型
-DIRECTION_TO_ARROW = {1: 1, 2: 4, 3: 2, 4: 3}
+ANGLE_TO_ARROW = {0: 4, 90: 1, 180: 3, 270: 2, 360: 4}
+# direction 与 arrowdirection 使用同一枚举
+DIRECTION_TO_ARROW = {1: 1, 2: 2, 3: 3, 4: 4}
 NEAR_RADIUS = 8000.0    # 编号与箭头锚点匹配距离,mm
 
 from collections import defaultdict
@@ -90,14 +90,14 @@ for gy, members in row_groups.items():
     s = sequence_direction(members, lambda v: world_pos[v][0])
     if s is not None:
         for v in members:
-            seq_dirs.setdefault(v, (1 if s > 0 else 3, "row"))
+            seq_dirs.setdefault(v, (4 if s > 0 else 3, "row"))
 
 for gx, members in col_groups.items():
     if len(members) < 2:
         continue
     s = sequence_direction(members, lambda v: world_pos[v][1])
     if s is not None:
-        d = 2 if s > 0 else 4   # CAD y 递增 = 画布向上
+        d = 1 if s > 0 else 2   # CAD y 递增 = 画布向上
         for v in members:
             if v not in seq_dirs or len(col_groups[gx]) > len(row_groups[grid_pos[v][1]]):
                 seq_dirs[v] = (d, "col")
@@ -167,7 +167,7 @@ print(f"设备: {len(out_rows)} | 画布: {gx_span}x{gy_span} 格 | 同格设备
 n_with_arrow = sum(1 for r in out_rows if int(r["arrowdirection"] or 0) > 0)
 print(f"arrowdirection 来源: CAD 箭头 {n_arrow} | 流向推断 {n_seq} | 空 {n_none}")
 dist = Counter(int(r["arrowdirection"] or 0) for r in out_rows)
-ARROW_NAMES = {0: "空", 1: "右", 2: "左", 3: "下", 4: "上"}
+ARROW_NAMES = {0: "空", 1: "上", 2: "下", 3: "左", 4: "右"}
 detail = " | ".join(f"{ARROW_NAMES[k]}={dist[k]}" for k in sorted(dist))
 print(f"arrowdirection 类型: 有箭头 {n_with_arrow} 台 / 空 {len(out_rows) - n_with_arrow} 台 ({detail})")
 print("width/height 输出 1;链路填充由 wcs_monitor.html 计算后写回")
