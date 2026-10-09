@@ -1,12 +1,13 @@
 import csv
-import math
 import os
+from collections import Counter
 from datetime import datetime
 
 from wcs_schema import WCS_FIELDS, blank_row
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WORLD_CSV = os.path.join(ROOT, "devices_world.csv")
+ARROW_CSV = os.path.join(ROOT, "station_arrows.csv")
 LAYOUT_CSV = os.path.join(ROOT, "wcs_layout.csv")
 
 # ---- 可调参数(接入真实 WCS 库后可再标定) ----
@@ -25,22 +26,11 @@ BELONG = "1"
 STATION_TYPE = "0"         # 设备类型/功能,目前已知取值 1,3,5,6,7,8,10,11,16
 CREATETIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# direction/arrowdirection 统一枚举:1=上,2=下,3=左,4=右
-ANGLE_TO_DIRECTION = {0: 4, 90: 1, 180: 3, 270: 2, 360: 4}
-# arrowdirection 多选方向:空字符串/0=无箭头,1=上,2=下,3=左,4=右;多选用逗号分隔
-# CAD 箭头角度 -> 箭头类型(CAD 90 度朝上,对应画布 y 减小)
-ANGLE_TO_ARROW = {0: 4, 90: 1, 180: 3, 270: 2, 360: 4}
-# direction 与 arrowdirection 使用同一枚举
-DIRECTION_TO_ARROW = {1: 1, 2: 2, 3: 3, 4: 4}
-NEAR_RADIUS = 8000.0    # 编号与箭头锚点匹配距离,mm
-
-from collections import defaultdict
+# 文字初始水平，与输送箭头独立。没有明确 CAD 来源的箭头留空。
 
 rows = list(csv.DictReader(open(WORLD_CSV, encoding="utf-8-sig")))
 devices = [(r["value"], float(r["x"]), float(r["y"]))
            for r in rows if r["kind"].startswith("L")]
-arrows = [(float(r["value"]), float(r["x"]), float(r["y"]))
-          for r in rows if r["kind"] == "ARROW"]
 
 if not devices:
     raise SystemExit("devices_world.csv 中没有设备标签")
@@ -53,75 +43,28 @@ def to_grid(x, y):
     return (round((x - x_min) / MM_PER_CELL) + OFFSET_X,
             round((y_max - y) / MM_PER_CELL) + OFFSET_Y)
 
-# ---- 方向:近距箭头锚点 -> 编号序列推断 ----
+# ---- 只保留已关联到设备的 CAD 箭头，多方向不截断 ----
 matched = {}
-for v, x, y in devices:
-    best = None
-    for a_deg, ax, ay in arrows:
-        d = math.hypot(x - ax, y - ay)
-        if d <= NEAR_RADIUS and (best is None or d < best[0]):
-            best = (d, a_deg)
-    if best:
-        matched[v] = (best[1], "arrow")
-
-grid_pos = {v: to_grid(x, y) for v, x, y in devices}
-world_pos = {v: (x, y) for v, x, y in devices}
-
-row_groups = defaultdict(list)
-col_groups = defaultdict(list)
-for v, (gx, gy) in grid_pos.items():
-    row_groups[gy].append(v)
-    col_groups[gx].append(v)
-
-def sequence_direction(members, coord):
-    """coord(v) 返回沿轴坐标;返回编号递增方向: +1 或 -1"""
-    ms = sorted(members, key=coord)
-    nums = [int(v) for v in ms]
-    inc = sum(1 for a, b in zip(nums, nums[1:]) if b > a)
-    dec = sum(1 for a, b in zip(nums, nums[1:]) if b < a)
-    if inc == dec:
-        return None
-    return 1 if inc > dec else -1
-
-seq_dirs = {}
-for gy, members in row_groups.items():
-    if len(members) < 2:
-        continue
-    s = sequence_direction(members, lambda v: world_pos[v][0])
-    if s is not None:
-        for v in members:
-            seq_dirs.setdefault(v, (4 if s > 0 else 3, "row"))
-
-for gx, members in col_groups.items():
-    if len(members) < 2:
-        continue
-    s = sequence_direction(members, lambda v: world_pos[v][1])
-    if s is not None:
-        d = 1 if s > 0 else 2   # CAD y 递增 = 画布向上
-        for v in members:
-            if v not in seq_dirs or len(col_groups[gx]) > len(row_groups[grid_pos[v][1]]):
-                seq_dirs[v] = (d, "col")
-
-for v, _, _ in devices:
-    if v not in matched and v in seq_dirs:
-        matched[v] = (seq_dirs[v][0], "sequence")
+if os.path.isfile(ARROW_CSV):
+    with open(ARROW_CSV, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            if r.get("association") not in ("unique_device", "verified") or not r.get("arrow_handles"):
+                continue
+            parts = {p.strip() for p in r.get("arrowdirection", "").split(",") if p.strip()}
+            if not parts:
+                continue
+            if not parts <= {"1", "2", "3", "4"}:
+                raise ValueError("CAD 箭头证据应使用 1上/2下/3左/4右：" + r["value"])
+            key = (r["value"], round(float(r["x"]), 1), round(float(r["y"]), 1))
+            matched.setdefault(key, set()).update(parts)
 
 # ---- 输出布局表 ----
 out_rows = []
 for v, x, y in sorted(devices, key=lambda p: int(p[0])):
     gx, gy = to_grid(x, y)
-    if v in matched:
-        val, src = matched[v]
-        if src == "arrow":
-            deg = int(val) % 360
-            direction = ANGLE_TO_DIRECTION.get(deg, "")
-            arrow_type = ANGLE_TO_ARROW.get(deg, 0)
-        else:
-            # 没有匹配到 CAD 箭头:用编号序列推断出来的流向换算成箭头类型
-            direction = val
-            arrow_type = DIRECTION_TO_ARROW.get(val, 0)
-    else:
-        src, direction, arrow_type = "none", "", 0
+    parts = matched.get((v, round(x, 1), round(y, 1)), set())
+    arrow_type = ",".join(sorted(parts, key=int))
+    src = "arrow" if parts else "none"
     row = blank_row()
     row.update({
         "itemid": v,
@@ -132,7 +75,7 @@ for v, x, y in sorted(devices, key=lambda p: int(p[0])):
         "locationy": gy,
         "width": WIDTH,
         "height": HEIGHT,
-        "direction": direction,
+        "direction": "",
         "createtime": CREATETIME,
         "status": STATUS,
         "belong": BELONG,
@@ -155,20 +98,18 @@ with open(LAYOUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
 
 # ---- 统计 ----
 cells = [(r["locationx"], r["locationy"]) for r in out_rows]
-from collections import Counter
 c = Counter(cells)
 collisions = sum(n - 1 for n in c.values() if n > 1)
 gx_span = max(p[0] for p in cells) - min(p[0] for p in cells)
 gy_span = max(p[1] for p in cells) - min(p[1] for p in cells)
 n_arrow = sum(1 for r in out_rows if r["direction_source"] == "arrow")
-n_seq = sum(1 for r in out_rows if r["direction_source"] == "sequence")
 n_none = sum(1 for r in out_rows if r["direction_source"] == "none")
 print(f"设备: {len(out_rows)} | 画布: {gx_span}x{gy_span} 格 | 同格设备: {collisions}")
-n_with_arrow = sum(1 for r in out_rows if int(r["arrowdirection"] or 0) > 0)
-print(f"arrowdirection 来源: CAD 箭头 {n_arrow} | 流向推断 {n_seq} | 空 {n_none}")
-dist = Counter(int(r["arrowdirection"] or 0) for r in out_rows)
+n_with_arrow = sum(1 for r in out_rows if r["arrowdirection"])
+print(f"arrowdirection 来源: CAD 箭头 {n_arrow} | 空 {n_none}")
+dist = Counter(r["arrowdirection"] for r in out_rows)
 ARROW_NAMES = {0: "空", 1: "上", 2: "下", 3: "左", 4: "右"}
-detail = " | ".join(f"{ARROW_NAMES[k]}={dist[k]}" for k in sorted(dist))
+detail = " | ".join(f"{'/'.join(ARROW_NAMES[int(p)] for p in k.split(',')) if k else '空'}={dist[k]}" for k in sorted(dist))
 print(f"arrowdirection 类型: 有箭头 {n_with_arrow} 台 / 空 {len(out_rows) - n_with_arrow} 台 ({detail})")
 print("width/height 输出 1;链路填充由 wcs_monitor.html 计算后写回")
 print(f"已生成 wcs_layout.csv (WCS 设备表 {len(fieldnames)} 列)")

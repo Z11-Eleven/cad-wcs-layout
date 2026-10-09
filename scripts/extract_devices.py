@@ -54,7 +54,7 @@ def store_insert(target):
     cur_insert = None
 
 
-with open(dxf_path, encoding="utf-8", errors="replace") as f:
+with open(dxf_path, encoding="utf-8", errors="replace", newline="\n") as f:
     it = iter(f)
     expect_section_name = False
     while True:
@@ -244,6 +244,10 @@ with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
         w.writerow([k, v, f"{x:.1f}", f"{y:.1f}"])
     for x, y, rot in arrows:
         w.writerow(["ARROW", f"{rot:.1f}", f"{x:.1f}", f"{y:.1f}"])
+
+# 每次从 CAD 提取布局都检查实际可见箭头，保留独立的关联证据。
+from extract_arrows import extract_arrows
+extract_arrows(dxf_path, OUT_CSV, ROOT)
 
 lab = [(v, x, y) for v, x, y in labels]
 if lab:

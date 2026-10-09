@@ -8,8 +8,9 @@
 
 - 流式解析大型文本 DXF，支持块嵌套、平移、缩放和旋转后的世界坐标还原。
 - 将 CAD 毫米坐标换算为画布格子坐标，输出固定的 WCS 34 列结构。
-- 根据 CAD 箭头锚点或设备编号序列推断流向。
+- 默认提取实际可见的 CAD 箭头，保留已确认的全部方向；无来源或无法关联时留空。
 - 提供浏览、编辑、搜索、单选、批量修改、框选、拖动、新增和删除。
+- 属性修改后点击其他站台或画布空白处自动保存，并显示保存站台提示；无需按 Enter。
 - 修改保存前支持 50 步撤回和 `Ctrl+Z`。
 - 同坐标设备按 `field5` 折叠，支持扇形展开和点击组外自动收回。
 - 箭头支持上、下、左、右多选组合，枚举为 `1=上、2=下、3=左、4=右`。
@@ -29,9 +30,11 @@ cad-wcs-layout/
 ├─ agents/
 │  └─ openai.yaml                   Codex 展示名称、简介和默认提示词
 ├─ references/
-│  └─ editor-behavior.md            编辑器交互、颜色和服务端详细约定
+│  ├─ editor-behavior.md            编辑器交互、颜色和服务端详细约定
+│  └─ cad-arrows.md                 CAD 箭头提取、关联和保留规则
 └─ scripts/
-   ├─ extract_devices.py            DXF → 世界坐标中间表
+   ├─ extract_devices.py            DXF → 世界坐标中间表，自动调用箭头提取
+   ├─ extract_arrows.py             可见箭头及设备关联证据
    ├─ generate_layout.py            世界坐标 → WCS 34 列布局 CSV
    ├─ build_html.py                 CSV → 自包含 HTML 编辑器
    ├─ server.py                     本地页面与保存接口
@@ -43,6 +46,8 @@ cad-wcs-layout/
 ```text
 *.dxf                   CAD 输入文件
 devices_world.csv       DXF 提取后的中间数据
+cad_arrows.csv          可见 CAD 箭头与候选编号
+station_arrows.csv      与设备关联的明确方向证据
 wcs_layout.csv          WCS 布局数据源
 wcs_monitor.html        静态构建的页面
 station_colors.json     页面保存的颜色配置
@@ -79,7 +84,7 @@ git clone https://github.com/Z11-Eleven/cad-wcs-layout.git "$env:USERPROFILE\.co
 
 ### 方案一：从 DXF 新建布局
 
-建议把 `scripts` 中的五个 Python 文件复制到独立项目目录，再把一个文本格式 DXF 放在同一目录。`extract_devices.py` 会读取找到的第一个 `*.dxf`。
+建议把 `scripts` 中的六个 Python 文件复制到独立项目目录，再把一个文本格式 DXF 放在同一目录。`extract_devices.py` 会读取找到的第一个 `*.dxf`。
 
 ```powershell
 cd D:\path\to\your-layout-project
@@ -97,8 +102,8 @@ http://127.0.0.1:8734/
 
 处理顺序：
 
-1. `extract_devices.py` 流式解析 DXF，生成 `devices_world.csv`。
-2. `generate_layout.py` 将毫米坐标换算为格子坐标，生成 `wcs_layout.csv`。
+1. `extract_devices.py` 流式解析 DXF，生成 `devices_world.csv`，默认调用 `extract_arrows.py` 提取并关联可见箭头。
+2. `generate_layout.py` 将毫米坐标换算为格子坐标，把明确的 CAD 箭头写入 `arrowdirection`，生成 `wcs_layout.csv`；未知方向留空，文字初始水平。
 3. `build_html.py` 可选生成静态 `wcs_monitor.html`。
 4. `server.py` 动态读取最新 CSV，并提供保存接口。
 
@@ -129,16 +134,24 @@ python server.py
 
 - 逐行处理文本 DXF，适合体积较大的图纸。
 - 解析 `BLOCKS` 和 `ENTITIES`，还原块嵌套后的世界坐标。
-- 提取设备编号、参数文字和箭头锚点，输出 `devices_world.csv`。
+- 提取设备编号、参数文字及旧锚点中间数据，输出 `devices_world.csv`。
+- 自动调用 `extract_arrows.py`，生成 `cad_arrows.csv` 与 `station_arrows.csv`。旧锚点不会单独作为 WCS 方向依据。
 - 输入 DXF 和输出 CSV 都位于脚本目录。
 
 适配新图纸时，先检查脚本中的图层、文本类型和设备编号过滤规则。
+
+### `extract_arrows.py`
+
+- 沿模型空间实际引用递归检查可见箭头轮廓，支持匿名块、嵌套、插入基点、旋转与镜像。
+- 将完整轮廓处于唯一设备线框范围的方向关联到编号与毫米位置，多方向取并集。
+- 输出可见箭头、设备关联和提取统计；其它箭头格式或无法关联的记录保留核对资料，详见 `references/cad-arrows.md`。
 
 ### `generate_layout.py`
 
 - 读取 `devices_world.csv`。
 - 使用 `MM_PER_CELL` 将 CAD 毫米换算为格子坐标，并把 Y 轴转换为画布向下。
-- 优先使用附近 CAD 箭头角度确定方向；没有箭头时，根据同行或同列的编号序列推断。
+- 读取 `station_arrows.csv` 中具有 CAD 标识的明确关联，保留全部方向；不按最近距离或编号序列推断，未知时留空。
+- 初始 `direction` 留空、文字水平，与 `arrowdirection` 独立。
 - 输出 `wcs_layout.csv`，字段顺序严格跟随 `wcs_schema.py`。
 
 常用可调参数：
@@ -152,7 +165,6 @@ python server.py
 | `STATUS` | 是否在画布显示 | `1` |
 | `BELONG` | 线程编号默认值 | `1` |
 | `STATION_TYPE` | 站台类型默认值 | `0` |
-| `NEAR_RADIUS` | 编号与箭头锚点最大匹配距离 | `8000.0` mm |
 
 ### `wcs_schema.py`
 
@@ -201,8 +213,8 @@ zone,workingLocation1,workingLocation2,workingNumber,protocolType,equipmentType
 | `width / height` | 画布渲染跨度，不是 CAD 物理尺寸 |
 | `status` | 只有值 `1` 的设备显示在画布上 |
 | `field5` | 层级，值越大越靠上；重叠设备默认显示最大者 |
-| `direction` | 1 上、2 下、3 左、4 右；1/2 垂直文字，3/4 水平文字，空值默认水平 |
-| `arrowdirection` | 逗号分隔多选：1 上、2 下、3 左、4 右 |
+| `direction` | 1 上、2 下、3 左、4 右；1/2 垂直文字，3/4 水平文字；初始留空、默认水平 |
+| `arrowdirection` | 逗号分隔多选：1 上、2 下、3 左、4 右；保留明确 CAD 箭头，无法提取时留空 |
 
 旧 `arrowdirection=5`（左右）会读取为 `3,4`，旧值 `6`（上下）会读取为 `1,2`；新页面不再生成旧双向枚举。
 
@@ -214,7 +226,7 @@ zone,workingLocation1,workingLocation2,workingNumber,protocolType,equipmentType
 
 - “浏览 / 编辑”切换查看与修改状态。
 - 搜索框可按设备 ID、编号或名称定位。
-- `+ / -` 调整缩放，支持范围为 0.05～10。
+- `+ / -` 调整缩放，支持范围为 0.001～10，可适配大型布局。
 - 鼠标位于画布时滚轮缩放；位于属性栏时滚动属性内容。
 - 右键拖动画布进行平移。
 
@@ -224,7 +236,9 @@ zone,workingLocation1,workingLocation2,workingNumber,protocolType,equipmentType
 - 拖动设备按整格移动。
 - Del 删除，Esc 清除选择，Ctrl+S 保存。
 - “撤回”或 Ctrl+Z 撤回尚未保存的修改，最多 50 步。
-- 保存成功后清空撤回历史。
+- 属性输入绑定原站台，未按 Enter 切换站台也不会把修改写入新站台。
+- 修改属性后点击其他站台或画布空白处自动保存；成功显示“已默认保存站台 <itemid> 数据”5 秒，失败保留修改供下次点击重试。
+- 保存请求串行执行；保存成功且没有后续修改时清空撤回历史。
 - “重算链路填充”是唯一触发自动宽高链路计算的入口。
 
 ### 重叠设备

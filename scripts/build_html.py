@@ -591,6 +591,9 @@ const toastEl = document.getElementById('toast');
 let editMode = false;
 let selected = new Set();
 const byId = () => Object.fromEntries(devices.map(d => [d.id, d]));
+const pendingPanelEdits = new Map();
+let layoutRevision = 0;
+let saveQueue = Promise.resolve();
 
 // ---- 保存前撤回 ----
 const UNDO_LIMIT = 50;
@@ -612,6 +615,7 @@ function updateUndoButton() {
 }
 
 function pushUndo(label) {
+  layoutRevision++;
   undoStack.push({
     label,
     devices: devices.map(cloneDevice),
@@ -619,6 +623,7 @@ function pushUndo(label) {
     expanded: [...expandedOverlapKeys],
     picked: [...pick],
     dirty: [...dirtyCells],
+    pendingPanelIds: [...pendingPanelEdits.keys()].map(d => d.id),
   });
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
   updateUndoButton();
@@ -627,7 +632,13 @@ function pushUndo(label) {
 function undoLast() {
   const state = undoStack.pop();
   if (!state) { toast('没有可撤回的修改', true); return; }
+  layoutRevision++;
   devices.splice(0, devices.length, ...state.devices.map(cloneDevice));
+  pendingPanelEdits.clear();
+  const restored = byId();
+  state.pendingPanelIds.forEach(id => {
+    if (restored[id]) pendingPanelEdits.set(restored[id], layoutRevision);
+  });
   selected = new Set(state.selected.filter(id => devices.some(d => d.id === id)));
   expandedOverlapKeys = new Set(state.expanded);
   pick.clear();
@@ -641,12 +652,12 @@ function undoLast() {
 }
 
 let toastTimer = null;
-function toast(msg, err) {
+function toast(msg, err, duration = err ? 4200 : 2200) {
   toastEl.textContent = msg;
   toastEl.className = err ? 'err' : '';
   toastEl.style.display = 'block';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.style.display = 'none', err ? 4200 : 2200);
+  toastTimer = setTimeout(() => toastEl.style.display = 'none', duration);
 }
 
 // ---- stationtype 图标颜色配置 ----
@@ -1141,7 +1152,9 @@ function applyPanelEdit(d, key, value) {
   if (key === 'width' || key === 'height') d.manual = true;
   syncDerived(d);
   touch(d);
+  pendingPanelEdits.set(d, layoutRevision);
   renderAll();
+  toast('已修改站台 ' + d.id + ' 的 ' + fieldLabel(key) + '，点击画布自动保存');
   return true;
 }
 
@@ -1196,6 +1209,7 @@ function renderPanel() {
         ? '宽/高为手工值,不参与自动链路填充'
         : '宽/高由链路填充自动计算(相邻间隔 1~' + CHAIN_MAX + ' 格)') +
       '<br>状态填 1 才会在预览图显示;层级顺序越大越置顶</div>' +
+      '<div class="hint">修改后点击其它站台或画布空白处，将自动保存当前站台数据</div>' +
       '<h3 style="margin-top:10px">只读字段</h3>' +
       EDIT_META.readonly.map(k => frowReadonly(fieldLabel(k), k, r[k])).join('');
   } else {
@@ -1210,7 +1224,7 @@ function renderPanel() {
   }
   panel.querySelectorAll('button[data-act]').forEach(b => b.onclick = () => {
     const act = b.dataset.act;
-    const cur = selDevices();
+    const cur = sel;
     if (!cur.length) return;
     if (act === 'bmove') {
       const bx = panel.querySelector('input[data-k="bdx"]'), by = panel.querySelector('input[data-k="bdy"]');
@@ -1225,6 +1239,7 @@ function renderPanel() {
         d.x += dx; d.y += dy; d.ox = d.x; d.oy = d.y;
         d.raw.locationx = String(d.x); d.raw.locationy = String(d.y);
         touch(d);
+        pendingPanelEdits.set(d, layoutRevision);
       });
       renderAll();
       toast('已移动 ' + cur.length + ' 台（尚未保存）');
@@ -1253,15 +1268,16 @@ function renderPanel() {
         if (key === 'width' || key === 'height') d.manual = true;
         syncDerived(d);
         touch(d);
+        pendingPanelEdits.set(d, layoutRevision);
       });
       renderAll();
       toast('已批量设置 ' + fieldLabel(key) + ' = ' + v + '（尚未保存）');
     }
   });
   panel.querySelectorAll('input[data-arrow-v]').forEach(inp => inp.onchange = () => {
-    const d = selDevices()[0];
+    const d = sel[0];
     if (!d) return;
-    const value = [...panel.querySelectorAll('input[data-arrow-v]:checked')]
+    const value = [...inp.closest('.arrow-checks').querySelectorAll('input[data-arrow-v]:checked')]
       .map(x => Number(x.dataset.arrowV)).sort((a, b) => a - b).join(',');
     applyPanelEdit(d, 'arrowdirection', value);
   });
@@ -1273,7 +1289,7 @@ function renderPanel() {
   panel.querySelectorAll('input[data-k], select[data-k]').forEach(inp => inp.onchange = () => {
     const k = inp.dataset.k;
     if (k === 'bdx' || k === 'bdy') return;   // 批量移动由"移动"按钮处理
-    const d = selDevices()[0];
+    const d = sel[0];
     if (!d) return;
     if (!applyPanelEdit(d, k, inp.value)) renderPanel();  // 校验失败时回显原值
   });
@@ -1296,7 +1312,7 @@ function renderAll(recomputeChains = false) {
 }
 
 // ---- 缩放与平移 ----
-const MIN_SCALE = 0.05;
+const MIN_SCALE = 0.001;
 const MAX_SCALE = 10;
 let scale = 1, tx = 0, ty = 0;
 function applyT() {
@@ -1341,7 +1357,12 @@ let pendingCollapse = null;
 stage.addEventListener('contextmenu', e => e.preventDefault());
 stage.addEventListener('pointerdown', e => {
   if (e.target.closest('#panel')) return;
-  const map = byId();
+  const clickedBlock = e.target.closest('.blk');
+  const clickedDevice = clickedBlock ? byId()[clickedBlock.dataset.id] : null;
+  // 先提交旧站台的输入，再切换选择或重绘面板。
+  const active = document.activeElement;
+  if (panel.contains(active)) active.blur();
+  if (pendingPanelEdits.size) saveToCsv(true);
   const overlapToggle = e.target.closest('.overlap-badge, .overlap-anchor');
   if (overlapToggle && e.button === 0) {
     const key = overlapToggle.dataset.overlapKey;
@@ -1358,8 +1379,6 @@ stage.addEventListener('pointerdown', e => {
   }
 
   // 点击展开组以外的设备或画布空白处时自动收起；组内设备仍可正常选择和编辑。
-  const clickedBlock = e.target.closest('.blk');
-  const clickedDevice = clickedBlock ? map[clickedBlock.dataset.id] : null;
   const keepKey = clickedDevice && expandedOverlapKeys.has(overlapKey(clickedDevice)) ?
     overlapKey(clickedDevice) : null;
   let collapsedAny = false;
@@ -1369,9 +1388,9 @@ stage.addEventListener('pointerdown', e => {
   if (collapsedAny) renderAll();
 
   if (e.target.closest('.blk') && editMode && e.button === 0) {
-    const id = e.target.closest('.blk').dataset.id;
-    const d = map[id];
+    const d = clickedDevice;
     if (!d) return;
+    const id = d.id;
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey) {
       selected.has(id) ? selected.delete(id) : selected.add(id);
@@ -1603,7 +1622,16 @@ document.getElementById('btn-refill').onclick = () => {
 };
 
 
-async function saveToCsv() {
+function saveToCsv(autoSave = false) {
+  saveQueue = saveQueue.then(() => persistLayout(autoSave === true));
+  return saveQueue;
+}
+
+async function persistLayout(autoSave) {
+  const pending = new Map(pendingPanelEdits);
+  if (autoSave && !pending.size) return;
+  const revision = layoutRevision;
+  const stationIds = [...pending.keys()].map(d => d.id);
   const seen = new Set();
   for (const d of devices) {
     const id = String(d.raw.itemid || '').trim();
@@ -1629,10 +1657,21 @@ async function saveToCsv() {
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
-    dirtyCells.clear();
-    undoStack.length = 0;
+    pending.forEach((version, d) => {
+      if (pendingPanelEdits.get(d) === version) pendingPanelEdits.delete(d);
+    });
+    if (layoutRevision === revision) {
+      dirtyCells.clear();
+      undoStack.length = 0;
+    }
     updateUndoButton();
-    toast('已保存 ' + data.count + ' 台设备到 wcs_layout.csv');
+    if (autoSave) {
+      const stations = stationIds.slice(0, 3).join('、') +
+        (stationIds.length > 3 ? '等 ' + stationIds.length + ' 个站台' : '');
+      toast('已默认保存站台 ' + stations + ' 数据', false, 5000);
+    } else {
+      toast('已保存 ' + data.count + ' 台设备到 wcs_layout.csv');
+    }
     if (dataView.style.display === 'block') renderTable(document.getElementById('q').value.trim());
   } catch (err) {
     toast('保存失败：' + err.message, true);
